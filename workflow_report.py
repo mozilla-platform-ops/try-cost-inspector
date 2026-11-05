@@ -16,6 +16,7 @@ import inspect_try as inspection
 import predict_try as predictor
 import price_azure as azure
 import price_gcp as gcp
+import price_gcp_public as public_spot
 
 
 CAVEATS = [
@@ -24,7 +25,7 @@ CAVEATS = [
     "Spot instances are assumed; this does not verify the original VM's purchasing model.",
     "Only task execution runtime is charged. Queue wait, boot/idle outside the task, networking and shared overhead are excluded.",
     "Azure rates are daily, usage-weighted subscription billing averages with reporting lag; they can blend OS/licensing classes and price changes. They are not exact per-VM charges or rolling 24-hour Spot prices.",
-    "GCP uses historical public CPU/RAM Spot list prices, not negotiated project/account rates, credits or discounts. More accurate billing access is deferred.",
+    "GCP uses public CPU/RAM Spot list prices, not negotiated project/account rates, credits or discounts. More accurate billing access is deferred.",
     "Hardware, shared signing/artifact workers, unsupported machines/regions and missing metadata/rates remain Not determined.",
     "Task classification covers known metadata only; Other/unknown categories may need refinement. A Failed test identifies a task, not an individual test case.",
 ]
@@ -113,6 +114,7 @@ def render_report(mode, revision, rows, warnings, output):
         fallback = sum("low confidence" in r["history_basis"] for r in rows)
         lines += [f"Duration history: {exact} exact name/pool matches, {fallback} low-confidence kind/pool fallbacks, {len(rows)-exact-fallback} without history.", ""]
     lines += ["## Caveats", ""] + [f"- {note}" for note in CAVEATS + (PREDICTION_CAVEATS if prediction else [
+        "GCP analysis uses CURRENT regional public-webpage prices retrieved when the workflow runs, not prices effective when the task ran or a preceding-24-hour average. No GCP billing credentials or Billing API calls are needed for analysis.",
         "Analysis includes observed failed runs and retries; reused dependencies are not counted as new executions. A running push is a snapshot and must be rerun after completion.",
         "Runtime is resolved minus started, including setup/cleanup inside that interval. Logs can expire or omit cloud metadata; no historical machine size is inferred from current pool configuration.",
         "Failed-test and infrastructure-exception subtotals below are already included in the known total; do not add them again.",
@@ -167,9 +169,15 @@ def main():
             write_csv(output / "tasks.csv", rows, inspection.FIELDS)
             azure_rows = [r for r in rows if r["cloud_provider"] == "azure"]
             rows = azure.price_rows(rows, azure_rates_for(azure_rows, subscription, warnings))
-            eligible = [r for r in rows if r["cloud_provider"] == "gcp" and r.get("started") and r.get("resolved") and r.get("vm_size") in gcp.SPECS]
-            catalog = catalog_for(min(gcp.timestamp(r["started"]) for r in eligible), max(gcp.timestamp(r["resolved"]) for r in eligible), warnings) if eligible else {}
-            rows = gcp.price_rows(rows, catalog)
+            snapshot = {"source": public_spot.URL, "retrieved_at": datetime.now(timezone.utc).isoformat(), "rates": []}
+            if any(r["cloud_provider"] == "gcp" for r in rows):
+                try:
+                    snapshot = public_spot.fetch_rates()
+                    warnings.append(f"GCP priced from CURRENT public regional webpage rates retrieved {snapshot['retrieved_at']}; not historical or a 24-hour average. CPU/RAM only; no Billing API request was made.")
+                except CLOUD_ERRORS as exc:
+                    warnings.append(f"GCP public Spot webpage unavailable or changed ({type(exc).__name__}); missing GCP costs remain Not determined.")
+            rows = public_spot.price_rows(rows, snapshot)
+            (output / "gcp-public-spot-rates.json").write_text(json.dumps(snapshot, indent=2) + "\n")
         else:
             as_of = datetime.now(timezone.utc).replace(microsecond=0)
             decision_id = inspection.get_json(f"{inspection.TC}/index/v1/task/gecko.v2.try.revision.{revision}.taskgraph.decision")["taskId"]
@@ -183,7 +191,7 @@ def main():
             rates = prediction_azure_rates(history, as_of, subscription, warnings)
             write_csv(output / "azure-prediction-rates.csv", rates, ["vm_size", "region", "window_start", "window_end", "usd_per_hour", "price_note"])
             rows = predictor.predict_rows(graph, decision, decision_id, history, catalog, as_of, rates)
-        (output / "gcp-catalog.json").write_text(json.dumps(catalog, indent=2) + "\n")
+            (output / "gcp-catalog.json").write_text(json.dumps(catalog, indent=2) + "\n")
         write_csv(output / "costs.csv", rows, predictor.FIELDS if args.mode == "predict" else inspection.FIELDS + azure.PRICE_FIELDS + azure.COST_FIELDS + gcp.FIELDS)
         report = render_report(args.mode, revision, rows, warnings, output)
     except CLOUD_ERRORS as exc:

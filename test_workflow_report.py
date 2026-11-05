@@ -1,5 +1,7 @@
 import copy
 import csv
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
@@ -25,6 +27,35 @@ class AccessTests(unittest.TestCase):
 
 
 class WorkflowReportTests(unittest.TestCase):
+    def test_analysis_uses_public_page_without_billing_catalog_and_handles_failure(self):
+        sample = dict.fromkeys(inspect_try.FIELDS, '')
+        sample.update(SAMPLE, started='2026-11-05T19:30:00Z', category='Unit/source test')
+        snapshot = {'source': tool.public_spot.URL, 'retrieved_at': AS_OF.isoformat(),
+                    'rates': [{'machine_type': 'c3d-standard-16', 'region': 'us-central1', 'usd_per_hour': '0.16656'}]}
+        previous_cwd = Path.cwd()
+        for unavailable in (False, True):
+            with self.subTest(unavailable=unavailable), tempfile.TemporaryDirectory() as folder:
+                try:
+                    os.chdir(folder)
+                    with patch.object(tool.inspection, 'inspect', return_value=[sample]), \
+                         patch.object(tool, 'catalog_for', side_effect=AssertionError('Analysis must not query billing')), \
+                         patch.object(tool.public_spot, 'fetch_rates', return_value=snapshot,
+                                      side_effect=OSError if unavailable else None), \
+                         patch.object(sys, 'argv', ['workflow_report.py', 'analysis', 'a'*40]), \
+                         patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': str(Path(folder)/'summary.md')}), \
+                         patch('sys.stdout'):
+                        tool.main()
+                    with Path('reports/costs.csv').open() as f:
+                        row = next(csv.DictReader(f))
+                    self.assertEqual(row['gcp_runtime_estimate_usd'], '' if unavailable else '0.08328000')
+                    report = Path('summary.md').read_text()
+                    self.assertIn('not prices effective when the task ran', report)
+                    self.assertIn('Storage is not yet included', report)
+                    if unavailable:
+                        self.assertIn('webpage unavailable or changed', report)
+                finally:
+                    os.chdir(previous_cwd)
+
     def test_analysis_summary_carries_caveats_and_unknown_coverage(self):
         task = copy.deepcopy(TASK)
         task['task']['tags'] = {'kind': 'test', 'test-suite': 'xpcshell'}

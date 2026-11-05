@@ -9,7 +9,9 @@ Open **Actions**, choose a workflow, select **Run workflow**, and enter a try
 revision (12–40 hexadecimal characters) or a Treeherder try URL. A short revision
 must resolve to exactly one push. Results appear in the workflow summary and a
 14-day artifact containing `report.md`, task CSVs, category totals, pricing
-evidence and (for analysis) a separate hardware summary.
+evidence and (for analysis) a separate hardware summary. Analysis saves the
+public regional price snapshot and its retrieval timestamp as
+`gcp-public-spot-rates.json`.
 
 ## Authorized users
 
@@ -29,10 +31,19 @@ Repository Actions configuration:
 |---|---|---|
 | `AZURE_CREDENTIALS` | Secret | JSON with `clientId`, `clientSecret`, `tenantId`, `subscriptionId` for the inspector service principal |
 | `AZURE_SUBSCRIPTION_ID` | Variable | FXCI subscription to query |
-| `GCP_CREDENTIALS` | Optional secret | Dedicated service-account JSON for public Cloud Billing Catalog access |
+| `GCP_CREDENTIALS` | Optional secret, predictor only | Dedicated service-account JSON for historical Cloud Billing Catalog access |
 
 Azure needs only **Cost Management Reader** at subscription scope. No VM/disk
-Reader grant is required. GCP needs working public Billing Catalog API access
+Reader grant is required. **Analysis fetches current regional prices directly
+from [Google’s public Spot pricing page](https://cloud.google.com/spot-vms/pricing),
+without GCP authentication or Billing API calls.** The page includes the data for
+each region; we do not apply the visible default Iowa price to other regions.
+Only verified supported CPU/RAM machine specifications are priced. For `-lssd`
+variants, the matching CPU/RAM-only table is used, excluding the separate storage
+price. Missing regions, unsupported machines or changed page structure leave
+prices Not determined.
+
+The **predictor** still needs working public Billing Catalog API access
 and API enablement in its consumer project; Compute Viewer alone is insufficient
 for that endpoint. The currently prepared GCP identity still needs that catalog
 access. Billing API enablement and negotiated/account-specific pricing access
@@ -44,8 +55,10 @@ can explain incomplete coverage rather than hide it behind a login failure.
 The repository contains unpriced task metadata from two public example pushes to
 seed prediction durations. No cloud keys, OAuth tokens, subscription billing
 exports or previously calculated subscription prices are committed. Without live
-GCP access or a saved catalog covering the entire requested window, GCP costs
+GCP access or a saved catalog covering the entire requested window, GCP predictor costs
 remain unknown; the predictor never stretches an old rate across a new window.
+Analysis instead uses current public webpage prices; they are not historical
+prices and do not establish a preceding-24-hour average.
 
 ## Caveats included in every workflow report
 
@@ -60,9 +73,11 @@ remain unknown; the predictor never stretches an old rate across a new window.
   day on/before execution, at most seven days old. Prediction uses the latest
   reported day at most seven days old, labeled as an approximation rather than
   an exact rolling 24-hour Spot average.
-- GCP uses public historical CPU/RAM Spot list prices; negotiated project/account
-  prices, discounts and credits are excluded. More accurate billing access is
-  follow-up work.
+- GCP analysis uses **current** public regional CPU/RAM Spot prices retrieved
+  when the workflow runs, not prices effective during the task or a 24-hour
+  average. The predictor retains historical/24-hour Catalog pricing. Negotiated
+  project/account prices, discounts and credits are excluded. More accurate
+  billing access is follow-up work.
 - Hardware/shared signing and artifact workers, unsupported machines/regions,
   missing metadata and missing rates remain unknown.
 - Classification maps known task metadata; Other/unknown needs refinement.
@@ -86,8 +101,9 @@ remain unknown; the predictor never stretches an old rate across a new window.
 
 ## Local use
 
-Python 3.11+ and the standard library. Azure CLI and gcloud are needed for live
-provider pricing; log in with the dedicated service identities above.
+Python 3.11+ and the standard library. Azure CLI is needed for Azure pricing; log in with the dedicated service
+identity above. GCP analysis needs only public HTTP access. The predictor needs
+gcloud and catalog access for live GCP pricing.
 
 ```sh
 python3 -m unittest -q

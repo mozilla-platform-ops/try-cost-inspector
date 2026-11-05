@@ -38,3 +38,19 @@
 - Downloaded both artifacts and verified that report.md includes storage,
   incomplete coverage, Spot assumptions, billing limitations, and predictor
   confidence/retry caveats. Missing GCP access is explicit, not treated as zero.
+
+## Analysis public-pricing change
+
+- User chose current public Spot webpage prices for analysis while GCP Billing
+  API access remains deferred. The predictor's 24-hour pricing behavior is unchanged.
+- Added price_gcp_public.py to read explicitly regional USD hourly CPU/RAM tables
+  from Google's public Spot pricing page without authentication. Validate machine
+  CPU/RAM against previously verified specifications; exclude Local SSD price tables,
+  ignore monthly views, reject conflicting prices and changed formats.
+- Preserve the original VM size in task rows; `-lssd` uses its verified matching
+  CPU/RAM-only machine table. Never apply Iowa's default price to other regions.
+- Removed GCP login/setup from the analysis workflow. Reports/CSV evidence label
+  current prices, retrieval time, source, storage exclusion and historical/24-hour
+  limitations. Missing webpage data remains Not determined.
+- 44 tests and actionlint pass, including region matching, current-price provenance,
+  storage exclusion, no Billing Catalog call for analysis, and unavailable webpage.
