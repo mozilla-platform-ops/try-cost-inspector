@@ -1,0 +1,5 @@
+__pycache__/
+reports/
+.env
+*.env
+gha-creds-*.json
