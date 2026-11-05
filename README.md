@@ -13,6 +13,23 @@ evidence and (for analysis) a separate hardware summary. Analysis saves the
 public regional price snapshot and its retrieval timestamp as
 `gcp-public-spot-rates.json`.
 
+## Report layout
+
+The workflow summary and downloadable `report.md` start with the summary:
+
+1. Total known cost and coverage (partial compute estimate; storage excluded).
+2. Cost by cloud provider, including unknown and physical-hardware groups.
+3. Cost by task type.
+4. Undetermined non-hardware costs, grouped by worker pool.
+5. Physical hardware breakdown by worker pool.
+6. Cost of all failed tasks, failed tests as a subset, and infrastructure exceptions.
+
+Caveats and data availability follow the summary. The full individual task list
+is the final section. Failure subtotals are already included in the total and
+must not be added together. Prediction reports do not forecast failure costs.
+Artifacts include `provider-costs.csv`, `category-costs.csv`,
+`hardware-totals.csv`, and (for analysis) `failed-task-costs.csv`.
+
 ## Authorized users
 
 Both workflows first run a separate **Verify RelOps User Access** job, using

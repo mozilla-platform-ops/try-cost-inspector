@@ -68,11 +68,47 @@ class WorkflowReportTests(unittest.TestCase):
             self.assertIn('Known compute subtotal: Not determined', report)
             self.assertIn('Storage is not yet included', report)
             self.assertIn('billing query unavailable', report)
-            self.assertIn('Failed tests: 1 runs; 0 priced', report)
+            self.assertIn('| Failed tests (subset of failed tasks) | 1 | 0 | 1 | Not determined |', report)
             self.assertIn('already included', report)
             self.assertIn('Spot instances are assumed', report)
             self.assertIn('not negotiated', report)
             self.assertTrue((Path(folder)/'hardware-totals.csv').exists())
+
+    def test_summary_order_unknown_nonhardware_and_all_failed_task_costs(self):
+        base = dict.fromkeys(inspect_try.FIELDS, '')
+        base.update(SAMPLE, category='Unit/source test', infrastructure='cloud-vm', worker_group='zone', worker_id='worker')
+        rows = [dict(base, name='completed', cloud_provider='azure', total_known_cost_usd='1'),
+                dict(base, name='failed-test', state='failed', failure_category='Failed test', total_known_cost_usd='2'),
+                dict(base, name='failed-build', category='Build', state='failed', cloud_provider='azure', total_known_cost_usd='3'),
+                dict(base, name='signing', cloud_provider='', infrastructure='unknown', worker_pool='scriptworker/signing', total_known_cost_usd=''),
+                dict(base, name='hardware', cloud_provider='', infrastructure='physical-hardware', worker_pool='releng-hardware/mac', total_known_cost_usd='')]
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)
+            report = tool.render_report('analysis', 'revision', rows, [], output)
+            headings = ['Total cost', 'Cost by provider', 'Cost by task type', 'Undetermined non-hardware costs',
+                        'Hardware breakdown', 'Cost of failed tasks', 'Individual task breakdown']
+            positions = [report.index('## '+heading) for heading in headings]
+            self.assertEqual(positions, sorted(positions))
+            self.assertTrue(report.rsplit('## ', 1)[1].startswith('Individual task breakdown'))
+            self.assertIn('$6.00000000 USD', report)
+            self.assertIn('1 non-hardware task runs have costs Not determined', report)
+            with (output/'provider-costs.csv').open() as f:
+                providers = {r['provider']: r for r in csv.DictReader(f)}
+            self.assertEqual(providers['AZURE']['estimated_usd'], '4')
+            self.assertEqual(providers['GCP']['estimated_usd'], '2')
+            self.assertEqual(providers['Physical hardware']['unpriced_task_runs'], '1')
+            with (output/'failed-task-costs.csv').open() as f:
+                failures = {r['outcome']: r for r in csv.DictReader(f)}
+            self.assertEqual(failures['Failed tasks']['estimated_usd'], '5')
+            self.assertEqual(failures['Failed tests (subset of failed tasks)']['estimated_usd'], '2')
+
+    def test_prediction_summary_keeps_details_last_and_does_not_forecast_failures(self):
+        rows = tool.predictor.predict_rows({'new': {'task': PREDICT_TASK}}, DECISION, 'decision', [SAMPLE], prices(), AS_OF)
+        with tempfile.TemporaryDirectory() as folder:
+            report = tool.render_report('predict', 'revision', rows, [], Path(folder))
+        self.assertIn('## Cost by provider', report)
+        self.assertIn('Not predicted. This forecast assumes one run', report)
+        self.assertTrue(report.rsplit('## ', 1)[1].startswith('Individual task breakdown'))
 
     def test_prediction_summary_explains_low_confidence_and_window(self):
         rows = tool.predictor.predict_rows({'new': {'task': PREDICT_TASK}}, DECISION, 'decision',

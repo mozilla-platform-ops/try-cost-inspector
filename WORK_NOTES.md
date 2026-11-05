@@ -60,3 +60,18 @@
   runs. Public snapshot contains 263 supported regional rates and a retrieval
   timestamp. Current-price, historical/24-hour limitations and storage caveats
   are present in both report and CSV provenance.
+
+## Summary-first report layout
+
+- User requested summary first and complete individual task list at the bottom.
+  Order: total known cost, provider totals, task-type totals, undetermined
+  non-hardware costs, hardware breakdown, failed-task costs, caveats/data
+  availability, then individual task details as the final section.
+- Unknown physical hardware costs are counted separately from missing cloud or
+  shared-worker costs. Added provider CSV and failed-task CSV summaries.
+- Failed-task totals include all failed tasks, including failed builds; failed
+  tests are an explicitly labeled subset. Infrastructure exceptions are separate.
+  All are already included in the overall known subtotal. Predictions do not
+  invent failure costs or observed hardware worker counts.
+- 46 tests pass, including exact summary order, details-last layout, provider
+  reconciliation, unknown hardware separation and failed-build cost coverage.
