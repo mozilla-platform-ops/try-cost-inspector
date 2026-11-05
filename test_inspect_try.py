@@ -23,6 +23,14 @@ def log(settings):
 
 
 class InspectionTests(unittest.TestCase):
+    def test_public_requests_identify_the_tool_and_bound_log_reads(self):
+        with patch.object(tool, "urlopen") as fetch:
+            fetch.return_value.__enter__.return_value.read.return_value = b"log"
+            self.assertEqual(tool.get("https://treeherder.mozilla.org/api/", limit=65536), b"log")
+            request = fetch.call_args.args[0]
+            self.assertIn("try-cost-inspector", request.get_header("User-agent"))
+            fetch.return_value.__enter__.return_value.read.assert_called_once_with(65536)
+
     def test_failed_test_is_an_additional_label(self):
         task = copy.deepcopy(TASK)
         task["task"]["tags"] = {"kind": "test", "test-suite": "xpcshell"}

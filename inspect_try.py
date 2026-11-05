@@ -10,7 +10,7 @@ import re
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 TC = "https://firefox-ci-tc.services.mozilla.com/api"
@@ -23,7 +23,8 @@ FIELDS = ["task_id", "run_id", "name", "category", "failure_category", "task_kin
 
 
 def get(url, limit=None):
-    with urlopen(url, timeout=60) as response:
+    request = Request(url, headers={"User-Agent": "try-cost-inspector/0.1 (+https://github.com/mozilla-platform-ops/try-cost-inspector)"})
+    with urlopen(request, timeout=60) as response:
         return response.read() if limit is None else response.read(limit)
 
 
