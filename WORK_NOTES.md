@@ -54,3 +54,9 @@
   limitations. Missing webpage data remains Not determined.
 - 44 tests and actionlint pass, including region matching, current-price provenance,
   storage exclusion, no Billing Catalog call for analysis, and unavailable webpage.
+
+- Live verification passed: https://github.com/mozilla-platform-ops/try-cost-inspector/actions/runs/42132151484
+  Downloaded the artifact and checked all 88 rows: 79 priced, including all 72 GCP
+  runs. Public snapshot contains 263 supported regional rates and a retrieval
+  timestamp. Current-price, historical/24-hour limitations and storage caveats
+  are present in both report and CSV provenance.
