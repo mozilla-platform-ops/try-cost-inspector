@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Estimate Azure task runtime costs using recent subscription billing rates."""
+"""Estimate Azure runtime costs from 24-hour cached subscription rates or public Spot fallback."""
 
 import argparse
 from collections import defaultdict

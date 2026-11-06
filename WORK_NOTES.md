@@ -114,4 +114,13 @@
   USD hourly units and primary meter. Never substitute Linux, ordinary Windows,
   reservations or ambiguous prices. Source/retrieval/cache status is in CSVs;
   fallback does not claim historical/24-hour-average/subscription-specific prices.
-- 54 tests and actionlint pass; cache and fallback workflow verification pending.
+- 54 tests and actionlint pass. Live verification succeeded:
+  - Cache population: https://github.com/mozilla-platform-ops/try-cost-inspector/actions/runs/42136839983
+  - Predictor/shared-cache round trip: https://github.com/mozilla-platform-ops/try-cost-inspector/actions/runs/42136844646
+  - Analysis cache hits: https://github.com/mozilla-platform-ops/try-cost-inspector/actions/runs/42137015361
+  The final artifact confirms all seven Azure rows hit the restored subscription
+  cache, keeping the original 2026-11-06T00:27:14.243937+00:00 retrieval timestamp
+  and identical costs. All 79 supported cloud runs are priced. Live billing
+  recovered, so retail fallback did not need to replace successful subscription
+  rates; fallback selection was checked against a real retail API response and
+  simulated billing failures. No IAM/API/credential changes were made.
