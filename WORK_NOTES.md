@@ -139,4 +139,11 @@
   unchanged; no storage or guessed overhead charges added.
 - 55 tests and actionlint 1.7.7 pass. Downloaded Google's current public page and
   parsed 263 regional rates; all 20 GCP tasks in the saved 22-task example priced
-  successfully, with a $0.20915283 GCP subtotal. Live workflow verification pending.
+  successfully, with a $0.20915283 GCP subtotal.
+- Live workflow verification passed:
+  https://github.com/mozilla-platform-ops/try-cost-inspector/actions/runs/42282894596
+  Workflow logs confirm 21/22 tasks priced: all 20 GCP tasks ($0.20915283), plus
+  one Azure task ($0.03468928), for $0.24384211 known compute. One task still
+  lacks history. Source, retrieval timestamp and current-price caveats are in
+  the generated report; no GCP login/setup ran. Artifact upload succeeded, but
+  local artifact download was unavailable; report was verified from job logs.
