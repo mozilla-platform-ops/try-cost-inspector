@@ -33,7 +33,7 @@ PREDICTION_CAVEATS = [
     "Prediction uses the optimized scheduled graph plus decision, excluding reused dependencies. Later action tasks, retriggers and retries are not forecast.",
     "Runtime is a completed-run median by task name and pool, falling back to task kind and pool with low confidence. Sparse, cached or unrepresentative runs can severely underestimate long builds/tests.",
     "Placement uses the historical VM/region mix; the actual scheduler may select different hardware. Missing history or any missing scenario price leaves that task cost unknown.",
-    "GCP prediction integrates Spot CPU/RAM prices over the preceding 24 hours. Azure uses a daily billing-rate approximation at most seven days old, or explicitly labeled current public Spot fallback. A 24-hour cache lifetime is not a 24-hour average price.",
+    "GCP prediction uses CURRENT regional public webpage Spot CPU/RAM prices, not historical or a preceding-24-hour average. No GCP authentication or Billing API access is required. Azure uses a daily billing-rate approximation at most seven days old, or explicitly labeled current public Spot fallback. A 24-hour cache lifetime is not a 24-hour average price.",
     "Seed history contains only two example pushes. This is not a trained or calibrated budget model. Future and target-push observations are excluded.",
 ]
 CLOUD_ERRORS = (OSError, ValueError, KeyError, URLError, subprocess.SubprocessError)
@@ -44,20 +44,6 @@ def write_csv(path, rows, fields=None):
         writer = csv.DictWriter(f, fieldnames=fields or list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-
-
-def catalog_for(start, end, warnings):
-    try:
-        return gcp.fetch_catalog([{"started": start.isoformat(), "resolved": end.isoformat()}])
-    except CLOUD_ERRORS as exc:
-        warnings.append(f"Live GCP catalog unavailable ({type(exc).__name__}); billing API/catalog access may be missing. No APIs or IAM grants were changed.")
-    for path in sorted(Path("examples").glob("*-catalog*.json")):
-        catalog = json.loads(path.read_text())
-        if gcp.timestamp(catalog["requested_start"]) <= start and end <= gcp.timestamp(catalog["requested_end"]):
-            warnings.append(f"Used saved GCP catalog {path.name}, covering this exact requested window; no stale rates were extended.")
-            return catalog
-    warnings.append("No saved GCP catalog covers the entire requested window; GCP prices remain Not determined.")
-    return {"requested_start": start.isoformat(), "requested_end": end.isoformat(), "skus": []}
 
 
 def prediction_azure_rates(history, as_of, subscription, warnings):
@@ -119,7 +105,9 @@ def render_report(mode, revision, rows, warnings, output):
     total_time = f"{Decimal(runtime(rows)):.2f} minutes" if runtime(rows) else "Not determined"
     lines += [f"**{'Predicted total task runtime' if prediction else 'Total task runtime'}: {total_time}** ({duration_count}/{len(rows)} with duration). Summed task time, not elapsed push time.", ""]
     if prediction and rows:
-        lines += [f"Requested pricing window: {rows[0]['price_window_start']} through {rows[0]['price_window_end']}.", ""]
+        azure_rows = [r for r in rows if r["cloud_provider"] == "azure"]
+        if azure_rows:
+            lines += [f"Azure rate reference window: {azure_rows[0]['price_window_start']} through {azure_rows[0]['price_window_end']}; rates are approximations.", ""]
         exact = sum(r["history_basis"] == "Same task name and pool" for r in rows)
         fallback = sum("low confidence" in r["history_basis"] for r in rows)
         lines += [f"Duration history: {exact} exact name/pool matches, {fallback} low-confidence kind/pool fallbacks, {len(rows)-exact-fallback} without history.", ""]
@@ -202,19 +190,18 @@ def main():
     try:
         revision = predictor.resolve_revision(args.revision)
         subscription = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
+        snapshot = {"source": public_spot.URL, "retrieved_at": datetime.now(timezone.utc).isoformat(), "rates": []}
+        try:
+            snapshot = public_spot.fetch_rates()
+            warnings.append(f"GCP priced from CURRENT public regional webpage rates retrieved {snapshot['retrieved_at']}; not historical or a 24-hour average. CPU/RAM only; no Billing API request was made.")
+        except CLOUD_ERRORS as exc:
+            warnings.append(f"GCP public Spot webpage unavailable or changed ({type(exc).__name__}); missing GCP costs remain Not determined.")
+        (output / "gcp-public-spot-rates.json").write_text(json.dumps(snapshot, indent=2) + "\n")
         if args.mode == "analysis":
             rows = inspection.inspect(revision)
             write_csv(output / "tasks.csv", rows, inspection.FIELDS)
             rows = azure.estimate_rows(rows, subscription, warnings)
-            snapshot = {"source": public_spot.URL, "retrieved_at": datetime.now(timezone.utc).isoformat(), "rates": []}
-            if any(r["cloud_provider"] == "gcp" for r in rows):
-                try:
-                    snapshot = public_spot.fetch_rates()
-                    warnings.append(f"GCP priced from CURRENT public regional webpage rates retrieved {snapshot['retrieved_at']}; not historical or a 24-hour average. CPU/RAM only; no Billing API request was made.")
-                except CLOUD_ERRORS as exc:
-                    warnings.append(f"GCP public Spot webpage unavailable or changed ({type(exc).__name__}); missing GCP costs remain Not determined.")
             rows = public_spot.price_rows(rows, snapshot)
-            (output / "gcp-public-spot-rates.json").write_text(json.dumps(snapshot, indent=2) + "\n")
         else:
             as_of = datetime.now(timezone.utc).replace(microsecond=0)
             decision_id = inspection.get_json(f"{inspection.TC}/index/v1/task/gecko.v2.try.revision.{revision}.taskgraph.decision")["taskId"]
@@ -224,11 +211,9 @@ def main():
             for name in ("0bb06e8-tasks.csv", "38085f6-tasks.csv"):
                 with (Path("examples") / name).open(newline="") as f:
                     history.extend(csv.DictReader(f))
-            catalog = catalog_for(as_of - timedelta(hours=24), as_of, warnings)
             rates = prediction_azure_rates(history, as_of, subscription, warnings)
             write_csv(output / "azure-prediction-rates.csv", rates, ["vm_size", "region", "window_start", "window_end", "usd_per_hour", "price_note"])
-            rows = predictor.predict_rows(graph, decision, decision_id, history, catalog, as_of, rates)
-            (output / "gcp-catalog.json").write_text(json.dumps(catalog, indent=2) + "\n")
+            rows = predictor.predict_rows(graph, decision, decision_id, history, {}, as_of, rates, public_rates=snapshot)
         write_csv(output / "costs.csv", rows, predictor.FIELDS if args.mode == "predict" else inspection.FIELDS + azure.PRICE_FIELDS + azure.COST_FIELDS + gcp.FIELDS)
         report = render_report(args.mode, revision, rows, warnings, output)
     except CLOUD_ERRORS as exc:

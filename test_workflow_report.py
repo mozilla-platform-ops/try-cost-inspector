@@ -1,5 +1,6 @@
 import copy
 import csv
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -38,7 +39,7 @@ class WorkflowReportTests(unittest.TestCase):
                 try:
                     os.chdir(folder)
                     with patch.object(tool.inspection, 'inspect', return_value=[sample]), \
-                         patch.object(tool, 'catalog_for', side_effect=AssertionError('Analysis must not query billing')), \
+                         patch.object(tool.gcp, 'fetch_catalog', side_effect=AssertionError('Must not query billing')), \
                          patch.object(tool.public_spot, 'fetch_rates', return_value=snapshot,
                                       side_effect=OSError if unavailable else None), \
                          patch.object(sys, 'argv', ['workflow_report.py', 'analysis', 'a'*40]), \
@@ -123,24 +124,60 @@ class WorkflowReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             report = tool.render_report('predict', 'revision', rows, [], Path(folder))
         self.assertIn('low-confidence', report)
-        self.assertIn('preceding 24 hours', report)
+        self.assertIn('not historical or a preceding-24-hour average', report)
         self.assertIn('reused dependencies', report)
         self.assertIn('Later action tasks', report)
         self.assertIn('sparse', report.lower())
         self.assertIn('Not determined', report)
 
-    def test_missing_catalog_produces_unknown_gcp_cost_without_losing_azure(self):
-        start = datetime(2030, 1, 1, tzinfo=timezone.utc)
-        end = datetime(2030, 1, 2, tzinfo=timezone.utc)
-        warnings = []
-        with patch.object(tool.gcp, 'fetch_catalog', side_effect=OSError), patch.object(Path, 'glob', return_value=[]):
-            catalog = tool.catalog_for(start, end, warnings)
-        row = dict(SAMPLE, started=start.isoformat(), resolved=end.isoformat(), duration_seconds='86400')
-        azure = dict(row, cloud_provider='azure', azure_runtime_estimate_usd='0.12345678')
-        result = tool.gcp.price_rows([row, azure], catalog)
-        self.assertEqual(result[0]['total_known_cost_usd'], '')
-        self.assertEqual(result[1]['total_known_cost_usd'], '0.12345678')
-        self.assertTrue(any('Not determined' in w for w in warnings))
+    def test_prediction_uses_public_snapshot_without_billing_and_handles_failure(self):
+        snapshot = {'source': tool.public_spot.URL, 'retrieved_at': AS_OF.isoformat(),
+                    'rates': [{'machine_type': 'c3d-standard-16', 'region': 'us-central1', 'usd_per_hour': '0.16656'}]}
+        azure_sample = dict(SAMPLE, task_id='old-azure', name='azure-test', cloud_provider='azure',
+                            worker_pool='gecko-t/windows', region='eastus', vm_size='Standard_F8alds_v7')
+        azure_task = dict(PREDICT_TASK, workerType='windows', metadata={'name': 'azure-test'})
+        history = [SAMPLE, azure_sample]
+        previous_cwd = Path.cwd()
+        for unavailable in (False, True):
+            with self.subTest(unavailable=unavailable), tempfile.TemporaryDirectory() as folder:
+                try:
+                    os.chdir(folder)
+                    Path('examples').mkdir()
+                    for name in ('0bb06e8-tasks.csv', '38085f6-tasks.csv'):
+                        tool.write_csv(Path('examples')/name, history)
+                    def azure_rates(history, as_of, subscription, warnings):
+                        return [{'vm_size': 'Standard_F8alds_v7', 'region': 'eastus',
+                                 'window_start': (as_of-tool.timedelta(hours=24)).isoformat(),
+                                 'window_end': as_of.isoformat(), 'usd_per_hour': '0.1',
+                                 'price_note': 'Approximate daily subscription rate'}]
+                    with patch.object(tool.inspection, 'get_json', side_effect=[
+                            {'taskId': 'decision'}, DECISION,
+                            {'new': {'task': PREDICT_TASK}, 'azure': {'task': azure_task}}]), \
+                         patch.object(tool.gcp, 'fetch_catalog', side_effect=AssertionError('Must not query billing')), \
+                         patch.object(tool.public_spot, 'fetch_rates', return_value=snapshot,
+                                      side_effect=OSError if unavailable else None), \
+                         patch.object(tool, 'prediction_azure_rates', side_effect=azure_rates), \
+                         patch.object(sys, 'argv', ['workflow_report.py', 'predict', 'a'*40]), \
+                         patch('sys.stdout'):
+                        tool.main()
+                    with Path('reports/costs.csv').open() as f:
+                        rows = {r['task_id']: r for r in csv.DictReader(f)}
+                    self.assertEqual(rows['new']['predicted_compute_usd'], '' if unavailable else '0.08328000')
+                    self.assertEqual(rows['azure']['predicted_compute_usd'], '0.05000000')
+                    report = Path('reports/report.md').read_text()
+                    self.assertIn('CURRENT regional public webpage', report)
+                    self.assertIn('not historical or a preceding-24-hour average', report)
+                    self.assertNotIn('Requested pricing window', report)
+                    self.assertFalse(Path('reports/gcp-catalog.json').exists())
+                    evidence = json.loads(Path('reports/gcp-public-spot-rates.json').read_text())
+                    self.assertEqual(evidence['rates'], [] if unavailable else snapshot['rates'])
+                    if unavailable:
+                        self.assertIn('webpage unavailable or changed', report)
+                    else:
+                        self.assertEqual(evidence['retrieved_at'], snapshot['retrieved_at'])
+                        self.assertIn(snapshot['retrieved_at'], rows['new']['price_note'])
+                finally:
+                    os.chdir(previous_cwd)
 
 
 if __name__ == '__main__':

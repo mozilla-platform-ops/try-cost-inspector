@@ -124,3 +124,19 @@
   recovered, so retail fallback did not need to replace successful subscription
   rates; fallback selection was checked against a real retail API response and
   simulated billing failures. No IAM/API/credential changes were made.
+
+## 2026-11-06 — Public GCP prices for prediction
+
+- User requested current publicly available GCP Spot prices for estimates while
+  Billing Catalog access remains deferred. Predictor now reuses analysis's
+  regional public CPU/RAM price reader; no GCP login or Billing API calls.
+- Both workflow artifacts save gcp-public-spot-rates.json. Prediction CSV notes
+  include source/retrieval timestamp and explicitly reject historical/24-hour
+  average claims. GCP pricing-window fields are blank. Missing regions/machines
+  or webpage failures remain Not determined; Azure estimates are preserved.
+- Standalone predictor defaults to public prices; explicit --gcp-catalog retains
+  saved historical reproduction. Duration history and placement weighting remain
+  unchanged; no storage or guessed overhead charges added.
+- 55 tests and actionlint 1.7.7 pass. Downloaded Google's current public page and
+  parsed 263 regional rates; all 20 GCP tasks in the saved 22-task example priced
+  successfully, with a $0.20915283 GCP subtotal. Live workflow verification pending.

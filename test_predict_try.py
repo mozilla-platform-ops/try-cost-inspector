@@ -87,6 +87,27 @@ class PredictionTests(unittest.TestCase):
         rows = tool.predict_rows({"new": {"task": TASK}}, DECISION, "decision", [sample], {}, AS_OF, [rate])
         self.assertEqual(next(r for r in rows if r["task_id"] == "new")["predicted_compute_usd"], "")
 
+    def test_public_prices_weight_regions_and_leave_missing_scenarios_unknown(self):
+        snapshot = {"source": tool.public_spot.URL, "retrieved_at": AS_OF.isoformat(),
+                    "rates": [{"machine_type": "c3d-standard-16", "region": "us-central1", "usd_per_hour": "0.2"},
+                              {"machine_type": "c3d-standard-16", "region": "us-east1", "usd_per_hour": "0.4"}]}
+        for size, region, expected in [(SAMPLE["vm_size"], "us-east1", "0.15000000"),
+                                       (SAMPLE["vm_size"], "us-west1", ""), ("unknown", "us-east1", "")]:
+            with self.subTest(size=size, region=region):
+                history = [SAMPLE, dict(SAMPLE, task_id="other", vm_size=size, region=region)]
+                with patch.object(tool.gcp, "estimate", side_effect=AssertionError("No Catalog pricing")):
+                    rows = tool.predict_rows({"new": {"task": TASK}}, DECISION, "decision", history,
+                                             {}, AS_OF, public_rates=snapshot)
+                row = next(r for r in rows if r["task_id"] == "new")
+                self.assertEqual(row["predicted_compute_usd"], expected)
+                self.assertEqual(row["price_window_start"], "")
+                self.assertEqual(row["price_window_end"], "")
+                if expected:
+                    self.assertIn("NOT historical or a 24-hour average", row["price_note"])
+                    self.assertIn(snapshot["source"], row["price_note"])
+                    self.assertIn(snapshot["retrieved_at"], row["price_note"])
+                    self.assertIn("storage excluded", row["price_note"])
+
     def test_short_revision_resolution_rejects_ambiguity(self):
         prefix = "740941b754ca"
         full = prefix + "0" * 28

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Current regional public Spot CPU/RAM prices for POC analysis, without billing access."""
+"""Current regional public Spot CPU/RAM prices for POC estimates, without billing access."""
 
 from datetime import datetime, timezone
 from html import unescape
@@ -71,6 +71,10 @@ def fetch_rates():
                       for (size, region), rate in sorted(rates.items())]}
 
 
+def hourly_price(size, region, rates):
+    return rates.get(((size or "").removesuffix("-lssd"), region)) if size in SPECS else None
+
+
 def price_rows(rows, snapshot):
     rates = {(r["machine_type"], r["region"]): number(r["usd_per_hour"]) for r in snapshot["rates"]}
     result = []
@@ -81,7 +85,7 @@ def price_rows(rows, snapshot):
         if row["cloud_provider"] == "gcp":
             size = row.get("vm_size") or ""
             base = size.removesuffix("-lssd")
-            rate = rates.get((base, row.get("region"))) if size in SPECS else None
+            rate = hourly_price(size, row.get("region"), rates)
             if row.get("duration_seconds") in (None, "") or not row.get("resolved"):
                 row["gcp_price_note"] = "Not priced: final execution duration unavailable"
             elif rate is None:

@@ -9,7 +9,7 @@ Open **Actions**, choose a workflow, select **Run workflow**, and enter a try
 revision (12–40 hexadecimal characters) or a Treeherder try URL. A short revision
 must resolve to exactly one push. Results appear in the workflow summary and a
 14-day artifact containing `report.md`, task CSVs, category totals, pricing
-evidence and (for analysis) a separate hardware summary. Analysis saves the
+evidence and (for analysis) a separate hardware summary. Both workflows save the
 public regional price snapshot and its retrieval timestamp as
 `gcp-public-spot-rates.json`.
 
@@ -52,10 +52,9 @@ Repository Actions configuration:
 |---|---|---|
 | `AZURE_CREDENTIALS` | Secret | JSON with `clientId`, `clientSecret`, `tenantId`, `subscriptionId` for the inspector service principal |
 | `AZURE_SUBSCRIPTION_ID` | Variable | FXCI subscription to query |
-| `GCP_CREDENTIALS` | Optional secret, predictor only | Dedicated service-account JSON for historical Cloud Billing Catalog access |
 
 Azure needs only **Cost Management Reader** at subscription scope for subscription rates. No VM/disk
-Reader grant is required. **Analysis fetches current regional prices directly
+Reader grant is required. **Both workflows fetch current regional prices directly
 from [Google’s public Spot pricing page](https://cloud.google.com/spot-vms/pricing),
 without GCP authentication or Billing API calls.** The page includes the data for
 each region; we do not apply the visible default Iowa price to other regions.
@@ -64,22 +63,18 @@ variants, the matching CPU/RAM-only table is used, excluding the separate storag
 price. Missing regions, unsupported machines or changed page structure leave
 prices Not determined.
 
-The **predictor** still needs working public Billing Catalog API access
-and API enablement in its consumer project; Compute Viewer alone is insufficient
-for that endpoint. The currently prepared GCP identity still needs that catalog
-access. Billing API enablement and negotiated/account-specific pricing access
-remain deferred; neither workflow enables APIs or changes IAM. Do not substitute
-personal user refresh tokens. Missing authentication/provider data is reported
-as **Not determined**. Cloud-login errors are allowed to reach the report so it
-can explain incomplete coverage rather than hide it behind a login failure.
+Neither workflow requires GCP credentials, gcloud or Billing API access.
+Billing API enablement and negotiated/account-specific pricing access remain
+deferred; neither workflow enables APIs or changes IAM. Missing provider data
+is reported as **Not determined**. Azure login errors are allowed to reach the
+report so it can explain incomplete coverage.
 
 The repository contains unpriced task metadata from two public example pushes to
 seed prediction durations. No cloud keys, OAuth tokens, subscription billing
-exports or previously calculated subscription prices are committed. Without live
-GCP access or a saved catalog covering the entire requested window, GCP predictor costs
-remain unknown; the predictor never stretches an old rate across a new window.
-Analysis instead uses current public webpage prices; they are not historical
-prices and do not establish a preceding-24-hour average.
+exports or previously calculated subscription prices are committed. GCP estimates
+use current public webpage prices, not historical prices or a preceding-24-hour
+average. Both workflows preserve the source and retrieval timestamp in pricing
+evidence; prediction CSV rows also include them in `price_note`.
 
 ## Caveats included in every workflow report
 
@@ -97,9 +92,9 @@ prices and do not establish a preceding-24-hour average.
   FXCI DevTest workers, matching region, SKU, OS, currency, hourly units and
   purchasing class. Ambiguous/missing matches remain unknown. Fallback is not
   negotiated or historical pricing, nor an exact 24-hour average.
-- GCP analysis uses **current** public regional CPU/RAM Spot prices retrieved
+- GCP analysis and prediction use **current** public regional CPU/RAM Spot prices retrieved
   when the workflow runs, not prices effective during the task or a 24-hour
-  average. The predictor retains historical/24-hour Catalog pricing. Negotiated
+  average. Negotiated
   project/account prices, discounts and credits are excluded. More accurate
   billing access is follow-up work.
 - Hardware/shared signing and artifact workers, unsupported machines/regions,
@@ -118,10 +113,10 @@ prices and do not establish a preceding-24-hour average.
   include cached builds. It is not a trained or calibrated budgeting model.
 - Machine and regional placement is inferred from historical samples. It can
   change. Missing history or any missing scenario price leaves that task unknown.
-- GCP prediction uses a time-weighted Spot CPU/RAM average over the preceding
-  24 hours, integrating changes during that interval. Historical catalog queries
-  crossing a Los Angeles calendar-month boundary currently remain unknown in
-  the workflow until split-window collection is implemented.
+- GCP prediction applies current regional public CPU/RAM prices to predicted
+  runtime, with the historical machine/region mix weighted by sample count.
+  Its CSV pricing-window fields are blank for GCP; current prices do not imply
+  a historical window. Azure retains its explicitly labeled approximations.
 
 ## Azure rate cache and throttling
 
@@ -160,8 +155,7 @@ is best-effort GitHub storage; a miss refreshes rates or uses the labeled fallba
 
 Python 3.11+ and the standard library. Azure CLI is needed for subscription pricing; public fallback is unauthenticated.
 Log in with the dedicated service
-identity above. GCP analysis needs only public HTTP access. The predictor needs
-gcloud and catalog access for live GCP pricing.
+identity above. GCP analysis and prediction need only public HTTP access.
 
 ```sh
 python3 -m unittest -q
@@ -172,3 +166,7 @@ python3 workflow_report.py predict 740941b754ca
 Set `AZURE_SUBSCRIPTION_ID` for Azure queries. Outputs go to `reports/`.
 `inspect_try.py`, `price_azure.py`, `price_gcp.py`, and `predict_try.py` remain
 available separately for saved inputs and reproducible offline calculations.
+
+`predict_try.py` also defaults to current public GCP prices. Its explicit
+`--gcp-catalog` option still accepts a saved historical catalog covering the
+preceding 24 hours for offline reproduction; workflows use current prices.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Predict scheduled try-task compute costs from earlier runs and 24-hour Spot rates."""
+"""Predict scheduled try-task compute costs from earlier runs and public Spot prices."""
 
 import argparse
 from collections import Counter
@@ -14,6 +14,7 @@ from urllib.error import URLError
 
 import inspect_try as inspection
 import price_gcp as gcp
+import price_gcp_public as public_spot
 from price_azure import number
 
 
@@ -35,10 +36,12 @@ def resolve_revision(value):
     return inspection.revision_from(matches.pop())
 
 
-def predict_rows(graph, decision, decision_id, history, catalog, as_of, azure_rates=()):
+def predict_rows(graph, decision, decision_id, history, catalog, as_of, azure_rates=(), public_rates=None):
     if decision.get("created") and gcp.timestamp(decision["created"]) > as_of:
         raise ValueError("Prediction timestamp precedes the decision task")
     start = as_of - timedelta(hours=24)
+    current_rates = {(r["machine_type"], r["region"]): number(r["usd_per_hour"])
+                     for r in public_rates["rates"]} if public_rates is not None else {}
     seen = set()
     previous = []
     for sample in history:
@@ -82,15 +85,24 @@ def predict_rows(graph, decision, decision_id, history, catalog, as_of, azure_ra
         machines = Counter((s.get("cloud_provider", ""), s.get("region", ""), s.get("vm_size", "")) for s in samples)
         for field, position in (("cloud_provider", 0), ("region", 1), ("vm_size", 2)):
             row[field] = ";".join(sorted({key[position] for key in machines if key[position]}))
+        if public_rates is not None and row["cloud_provider"] == "gcp":
+            row["price_window_start"] = row["price_window_end"] = ""
         weighted = Decimal(0)
         notes = set()
         try:
             for (provider, region, size), count in machines.items():
                 if provider == "gcp":
-                    rate, _, _ = gcp.estimate({"vm_size": size, "region": region,
-                        "started": start.isoformat(), "resolved": as_of.isoformat(),
-                        "duration_seconds": "86400"}, catalog)
-                    notes.add("GCP public Spot CPU/RAM; time-weighted 24-hour average")
+                    if public_rates is not None:
+                        rate = public_spot.hourly_price(size, region, current_rates)
+                        if rate is None:
+                            raise ValueError("No supported current public CPU/RAM rate for this exact region/machine")
+                        notes.add(f"GCP CURRENT public Spot CPU/RAM prices retrieved {public_rates['retrieved_at']}; "
+                                  f"source: {public_rates['source']}; NOT historical or a 24-hour average; storage excluded")
+                    else:
+                        rate, _, _ = gcp.estimate({"vm_size": size, "region": region,
+                            "started": start.isoformat(), "resolved": as_of.isoformat(),
+                            "duration_seconds": "86400"}, catalog)
+                        notes.add("GCP public Spot CPU/RAM; time-weighted 24-hour average")
                 elif provider == "azure":
                     matches = [r for r in azure_rates if r["vm_size"] == size and r["region"] == region
                                and gcp.timestamp(r["window_start"]) == start
@@ -121,7 +133,7 @@ def main():
     parser.add_argument("--graph", help="Saved optimized task-graph.json; use with --decision and --decision-id")
     parser.add_argument("--decision", help="Saved decision task definition JSON")
     parser.add_argument("--decision-id")
-    parser.add_argument("--gcp-catalog", help="Historical catalog covering the full preceding 24 hours; otherwise fetch with gcloud")
+    parser.add_argument("--gcp-catalog", help="Historical catalog covering the full preceding 24 hours; otherwise use current public webpage prices")
     parser.add_argument("--azure-rates", help="CSV: vm_size,region,window_start,window_end,usd_per_hour,price_note")
     parser.add_argument("--as-of", help="UTC prediction timestamp; default now")
     args = parser.parse_args()
@@ -147,16 +159,18 @@ def main():
         for path in args.history:
             with open(path, newline="") as f:
                 history.extend(csv.DictReader(f))
+        public_rates = None
         if args.gcp_catalog:
             with open(args.gcp_catalog) as f:
                 catalog = json.load(f)
         else:
-            catalog = gcp.fetch_catalog([{"started": (as_of - timedelta(hours=24)).isoformat(), "resolved": as_of.isoformat()}])
+            catalog = {}
+            public_rates = public_spot.fetch_rates()
         azure_rates = []
         if args.azure_rates:
             with open(args.azure_rates, newline="") as f:
                 azure_rates = list(csv.DictReader(f))
-        rows = predict_rows(graph, decision, decision_id, history, catalog, as_of, azure_rates)
+        rows = predict_rows(graph, decision, decision_id, history, catalog, as_of, azure_rates, public_rates)
     except (OSError, ValueError, KeyError, URLError, gcp.subprocess.SubprocessError) as exc:
         parser.exit(1, f"Prediction failed: {exc}\n")
     writer = csv.DictWriter(sys.stdout, fieldnames=FIELDS)
