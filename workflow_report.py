@@ -103,6 +103,11 @@ def table(headers, rows):
 def render_report(mode, revision, rows, warnings, output):
     prediction = mode == "predict"
     field = "predicted_compute_usd" if prediction else "total_known_cost_usd"
+    duration_field = "predicted_duration_seconds" if prediction else "duration_seconds"
+
+    def runtime(selected):
+        durations = [azure.number(r[duration_field]) for r in selected if r.get(duration_field) not in (None, "")]
+        return format(sum(durations, Decimal(0)) / 60, ".4f") if durations else ""
 
     def is_hardware(row):
         return row.get("infrastructure") == "physical-hardware" or (
@@ -111,12 +116,13 @@ def render_report(mode, revision, rows, warnings, output):
     def provider(row):
         if is_hardware(row):
             return "Physical hardware"
-        return row["cloud_provider"].upper() if row.get("cloud_provider") else "Unknown infrastructure"
+        return row["cloud_provider"].upper() if row.get("cloud_provider") else "Uncategorized"
 
     def summary(label, name, selected):
         amounts = [azure.number(r[field]) for r in selected if r.get(field)]
         return {label: name, "task_runs": len(selected), "priced_task_runs": len(amounts),
                 "unpriced_task_runs": len(selected) - len(amounts),
+                "runtime_minutes": runtime(selected),
                 "estimated_usd": str(sum(amounts, Decimal(0))) if amounts or not selected else ""}
 
     costs = [azure.number(r[field]) for r in rows if r.get(field)]
@@ -124,6 +130,9 @@ def render_report(mode, revision, rows, warnings, output):
     lines = [f"# POC Cost {'Predictor' if prediction else 'Analysis'}", "", "## Total cost", "",
              f"**Known compute subtotal: {subtotal}. Priced {len(costs)}/{len(rows)} {'scheduled tasks (including decision)' if prediction else 'task runs'}.**", "",
              "**Storage is not yet included. Totals are partial.**", "", f"Try revision: `{revision}`", ""]
+    duration_count = sum(r.get(duration_field) not in (None, "") for r in rows)
+    total_time = f"{Decimal(runtime(rows)):.2f} minutes" if runtime(rows) else "Not determined"
+    lines += [f"**{'Predicted total task runtime' if prediction else 'Total task runtime'}: {total_time}** ({duration_count}/{len(rows)} with duration). Summed task time, not elapsed push time.", ""]
     if prediction and rows:
         lines += [f"Requested pricing window: {rows[0]['price_window_start']} through {rows[0]['price_window_end']}.", ""]
         exact = sum(r["history_basis"] == "Same task name and pool" for r in rows)
@@ -135,29 +144,30 @@ def render_report(mode, revision, rows, warnings, output):
             ("Cost by task type", "category", [(name, [r for r in rows if r["category"] == name]) for name in sorted({r["category"] for r in rows})])]:
         summaries = [summary(label, name, selected) for name, selected in groups]
         write_csv(output / ("provider-costs.csv" if label == "provider" else "category-costs.csv"), summaries,
-                  [label, "task_runs", "priced_task_runs", "unpriced_task_runs", "estimated_usd"])
+                  [label, "task_runs", "priced_task_runs", "unpriced_task_runs", "runtime_minutes", "estimated_usd"])
         lines += ["", "## " + title, ""] + table(
-            ["Provider" if label == "provider" else "Type", "Runs/tasks", "Priced", "Not determined", "Known USD"],
+            ["Provider" if label == "provider" else "Type", "Runs/tasks", "Priced", "Not determined", "Runtime minutes", "Known USD"],
             [list(r.values()) for r in summaries])
 
     missing = [r for r in rows if not is_hardware(r) and not r.get(field)]
-    lines += ["", "## Undetermined non-hardware costs", ""]
+    lines += ["", "## Uncategorized non-hardware costs", ""]
+    uncategorized = [{"worker_pool": pool, "task_runs": sum(r["worker_pool"] == pool for r in missing),
+                      "runtime_minutes": runtime([r for r in missing if r["worker_pool"] == pool])}
+                     for pool in sorted({r["worker_pool"] for r in missing})]
+    write_csv(output / "uncategorized-totals.csv", uncategorized, ["worker_pool", "task_runs", "runtime_minutes"])
     if missing:
-        lines += [f"**{len(missing)} non-hardware {'tasks' if prediction else 'task runs'} have costs Not determined; these costs are missing from the known subtotal.**", ""]
-        lines += table(["Worker pool", "Runs/tasks with cost Not determined"], [
-            [pool, sum(r["worker_pool"] == pool for r in missing)] for pool in sorted({r["worker_pool"] for r in missing})])
+        lines += [f"**Uncategorized: {len(missing)} non-hardware {'tasks' if prediction else 'task runs'}; total runtime {runtime(missing) or 'Not determined'} minutes.** Their costs are Not determined and missing from the known subtotal.", ""]
+        lines += table(["Worker pool", "Uncategorized runs/tasks", "Runtime minutes"], [list(r.values()) for r in uncategorized])
     else:
-        lines += ["No non-hardware task costs are undetermined."]
+        lines += ["No uncategorized non-hardware task costs."]
     lines += ["", "Storage and other excluded cost components are still outside the estimate, including for priced tasks."]
 
     hardware = []
-    duration_field = "predicted_duration_seconds" if prediction else "duration_seconds"
     for pool in sorted({r["worker_pool"] for r in rows if is_hardware(r)}):
         selected = [r for r in rows if r["worker_pool"] == pool]
-        durations = [azure.number(r[duration_field]) for r in selected if r.get(duration_field) not in (None, "")]
         hardware.append({"worker_pool": pool, "task_runs": len(selected),
                          "observed_workers": "" if prediction else len({(r["worker_group"], r["worker_id"]) for r in selected}),
-                         "runtime_minutes": str(sum(durations, Decimal(0))/60) if durations else "",
+                         "runtime_minutes": runtime(selected),
                          "cost": "Not determined"})
     write_csv(output / "hardware-totals.csv", hardware, ["worker_pool", "task_runs", "observed_workers", "runtime_minutes", "cost"])
     lines += ["", "## Hardware breakdown", ""]
@@ -173,8 +183,8 @@ def render_report(mode, revision, rows, warnings, output):
             ("Failed tests (subset of failed tasks)", [r for r in rows if r.get("failure_category") == "Failed test"]),
             ("Infrastructure exceptions", [r for r in rows if r["state"] == "exception"])]]
         write_csv(output / "failed-task-costs.csv", failures,
-                  ["outcome", "task_runs", "priced_task_runs", "unpriced_task_runs", "estimated_usd"])
-        lines += table(["Outcome", "Runs", "Priced", "Not determined", "Known USD"], [list(r.values()) for r in failures])
+                  ["outcome", "task_runs", "priced_task_runs", "unpriced_task_runs", "runtime_minutes", "estimated_usd"])
+        lines += table(["Outcome", "Runs", "Priced", "Not determined", "Runtime minutes", "Known USD"], [list(r.values()) for r in failures])
         lines += ["", "These costs are already included in the known total. Failed tests are a subset of failed tasks; do not add these rows together."]
 
     lines += ["", "## Caveats", ""] + [f"- {note}" for note in CAVEATS + (PREDICTION_CAVEATS if prediction else [

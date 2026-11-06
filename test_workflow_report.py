@@ -68,7 +68,7 @@ class WorkflowReportTests(unittest.TestCase):
             self.assertIn('Known compute subtotal: Not determined', report)
             self.assertIn('Storage is not yet included', report)
             self.assertIn('billing query unavailable', report)
-            self.assertIn('| Failed tests (subset of failed tasks) | 1 | 0 | 1 | Not determined |', report)
+            self.assertIn('| Failed tests (subset of failed tasks) | 1 | 0 | 1 | 1.9866 | Not determined |', report)
             self.assertIn('already included', report)
             self.assertIn('Spot instances are assumed', report)
             self.assertIn('not negotiated', report)
@@ -85,16 +85,23 @@ class WorkflowReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder)
             report = tool.render_report('analysis', 'revision', rows, [], output)
-            headings = ['Total cost', 'Cost by provider', 'Cost by task type', 'Undetermined non-hardware costs',
+            headings = ['Total cost', 'Cost by provider', 'Cost by task type', 'Uncategorized non-hardware costs',
                         'Hardware breakdown', 'Cost of failed tasks', 'Individual task breakdown']
             positions = [report.index('## '+heading) for heading in headings]
             self.assertEqual(positions, sorted(positions))
             self.assertTrue(report.rsplit('## ', 1)[1].startswith('Individual task breakdown'))
             self.assertIn('$6.00000000 USD', report)
-            self.assertIn('1 non-hardware task runs have costs Not determined', report)
+            self.assertIn('Uncategorized: 1 non-hardware task runs; total runtime 30.0000 minutes', report)
             with (output/'provider-costs.csv').open() as f:
                 providers = {r['provider']: r for r in csv.DictReader(f)}
             self.assertEqual(providers['AZURE']['estimated_usd'], '4')
+            self.assertEqual(providers['Uncategorized']['runtime_minutes'], '30.0000')
+            self.assertIn('Total task runtime: 150.00 minutes', report)
+            with (output/'uncategorized-totals.csv').open() as f:
+                uncategorized = list(csv.DictReader(f))
+            self.assertEqual(len(uncategorized), 1)
+            self.assertEqual(uncategorized[0]['worker_pool'], 'scriptworker/signing')
+            self.assertEqual(uncategorized[0]['runtime_minutes'], '30.0000')
             self.assertEqual(providers['GCP']['estimated_usd'], '2')
             self.assertEqual(providers['Physical hardware']['unpriced_task_runs'], '1')
             with (output/'failed-task-costs.csv').open() as f:

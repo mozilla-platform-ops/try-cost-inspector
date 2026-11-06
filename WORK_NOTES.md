@@ -75,3 +75,16 @@
   invent failure costs or observed hardware worker counts.
 - 46 tests pass, including exact summary order, details-last layout, provider
   reconciliation, unknown hardware separation and failed-build cost coverage.
+
+## Uncategorized labels and runtimes
+
+- User requested **Uncategorized** for missing non-hardware cost assignment,
+  including the previously Unknown infrastructure provider bucket. Unknown
+  dollar values remain Not determined; existing task-purpose categories and
+  known providers are retained. Physical hardware remains separate.
+- Added total task runtime and duration coverage at the top, group runtimes in
+  provider/type/failure summaries, and Uncategorized runtime totals by pool.
+  Times are summed task execution, not elapsed push time. Added
+  uncategorized-totals.csv; 46 tests pass, covering label and runtime separation.
+- User requested another analysis query after five minutes; target dispatch
+  2026-11-06T00:11:21Z for revision 38085f64c3c4. No pricing queries during wait.
