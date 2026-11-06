@@ -54,7 +54,7 @@ Repository Actions configuration:
 | `AZURE_SUBSCRIPTION_ID` | Variable | FXCI subscription to query |
 | `GCP_CREDENTIALS` | Optional secret, predictor only | Dedicated service-account JSON for historical Cloud Billing Catalog access |
 
-Azure needs only **Cost Management Reader** at subscription scope. No VM/disk
+Azure needs only **Cost Management Reader** at subscription scope for subscription rates. No VM/disk
 Reader grant is required. **Analysis fetches current regional prices directly
 from [Google’s public Spot pricing page](https://cloud.google.com/spot-vms/pricing),
 without GCP authentication or Billing API calls.** The page includes the data for
@@ -89,11 +89,14 @@ prices and do not establish a preceding-24-hour average.
   rate remains part of that rate.
 - Spot instances are assumed. Only task execution runtime is counted; queue
   wait, boot/idle outside the task, network and shared overhead are excluded.
-- Azure prices use daily, usage-weighted subscription billing rates, which lag
-  and can blend OS/licensing classes or price changes. Analysis uses the latest
-  day on/before execution, at most seven days old. Prediction uses the latest
-  reported day at most seven days old, labeled as an approximation rather than
-  an exact rolling 24-hour Spot average.
+- Azure prefers subscription billing rates with a **24-hour cache TTL**.
+  Entries are keyed by subscription, query dates and worker-pool scope. Analysis
+  selects a billing day on/before execution, at most seven days old. Billing can
+  lag and blend OS/licensing classes or price changes. When unavailable, a
+  current public Windows **DevTestConsumption** Spot rate can be used for these
+  FXCI DevTest workers, matching region, SKU, OS, currency, hourly units and
+  purchasing class. Ambiguous/missing matches remain unknown. Fallback is not
+  negotiated or historical pricing, nor an exact 24-hour average.
 - GCP analysis uses **current** public regional CPU/RAM Spot prices retrieved
   when the workflow runs, not prices effective during the task or a 24-hour
   average. The predictor retains historical/24-hour Catalog pricing. Negotiated
@@ -120,9 +123,43 @@ prices and do not establish a preceding-24-hour average.
   crossing a Los Angeles calendar-month boundary currently remain unknown in
   the workflow until split-window collection is implemented.
 
+## Azure rate cache and throttling
+
+Both workflows restore/save a shared GitHub Actions cache and serialize report
+jobs under the same concurrency group. Each entry is valid for **less than
+24 hours from its successful retrieval**. A cache hit does not extend its life;
+expired, future-dated or unreadable entries are not used. GitHub may physically
+retain old cache archives longer, but the tool rejects expired rates.
+
+Source priority is fresh cached subscription rates, then a live subscription
+query if needed, then current public Spot fallback. If a fresh public fallback
+cache already covers all requested Azure tasks and no subscription cache exists,
+reuse it without querying Cost Management again until it expires. Missing prices
+are never replaced with zero, and failed queries are not cached as prices.
+
+The query authenticates with the existing service principal. HTTP 429/503
+responses use the longest supplied Azure/Retry-After delay plus a second; without
+one, exponential backoff is used. At most three attempts and four minutes of
+waiting per request are allowed. Authentication failures are not retried. Logs
+and report warnings identify HTTP failures without exposing tokens.
+
+Public fallback uses Microsoft's unauthenticated
+[Retail Prices API](https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices).
+Windows DevTest Spot pricing is explicitly selected for this FXCI subscription;
+Linux rates, ordinary Windows consumption rates, reservations, non-USD and
+non-hourly prices are not substituted. Each CSV row records source, retrieval
+time and cache hit/miss status. A fallback rate has no historical billing date.
+**A 24-hour cache lifetime is not a 24-hour average Spot price.**
+
+For local runs the cache defaults to `.azure-price-cache/` (Git-ignored); set
+`AZURE_PRICE_CACHE_DIR` to change its directory. Cache files contain only query
+scope and rate evidence, never credentials or access tokens. The shared cache
+is best-effort GitHub storage; a miss refreshes rates or uses the labeled fallback.
+
 ## Local use
 
-Python 3.11+ and the standard library. Azure CLI is needed for Azure pricing; log in with the dedicated service
+Python 3.11+ and the standard library. Azure CLI is needed for subscription pricing; public fallback is unauthenticated.
+Log in with the dedicated service
 identity above. GCP analysis needs only public HTTP access. The predictor needs
 gcloud and catalog access for live GCP pricing.
 

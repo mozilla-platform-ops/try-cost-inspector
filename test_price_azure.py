@@ -32,7 +32,7 @@ class AzurePricingTests(unittest.TestCase):
                 ([], "Not determined")]:
             with self.subTest(expected=expected), \
                     patch("builtins.open", mock_open(read_data=stream.getvalue())), \
-                    patch.object(tool, "fetch_billing", return_value=billing(entries)), \
+                    patch.object(tool, "cached_billing_rates", return_value=(tool.billing_rates(billing(entries)), "2026-11-05T00:00:00+00:00", "hit")), \
                     patch("sys.argv", ["price_azure.py", "tasks.csv", "--subscription", SUBSCRIPTION]), \
                     patch("sys.stdout", new_callable=io.StringIO), \
                     patch("sys.stderr", new_callable=io.StringIO) as stderr:
@@ -68,7 +68,7 @@ class AzurePricingTests(unittest.TestCase):
     def test_validation(self):
         with self.assertRaises(ValueError):
             tool.billing_rates(billing([[1, 10, 20261104, "F8alds v7 Spot", "us east", "EUR"]]))
-        for value in ["NaN", "Infinity", "-1"]:
+        for value in ["NaN", "Infinity", "-1", "invalid"]:
             with self.assertRaises(ValueError):
                 tool.number(value)
         for location, expected in [("us south central", "southcentralus"),
@@ -87,17 +87,17 @@ class AzurePricingTests(unittest.TestCase):
         first = billing([[1, 10, 20261103, "F8alds v7 Spot", "us east", "USD"]],
                         "https://management.azure.com/next")
         second = billing([[2, 10, 20261104, "F8alds v7 Spot", "us east", "USD"]])
-        with patch.object(tool.subprocess, "run", side_effect=[
-                subprocess.CompletedProcess([], 0, json.dumps(first)),
-                subprocess.CompletedProcess([], 0, json.dumps(second))]) as run:
+        with patch.object(tool.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "test-token")), \
+                patch.object(tool, "request_json", side_effect=[first, second]) as run:
             payload = tool.fetch_billing([ROW], SUBSCRIPTION)
         self.assertEqual(len(payload["properties"]["rows"]), 2)
-        args = run.call_args_list[0].args[0]
-        body = json.loads(args[args.index("--body") + 1])
+        args = run.call_args_list[0].args
+        body = args[1]
         self.assertEqual(body["dataset"]["aggregation"]["hours"]["name"], "UsageQuantity")
         self.assertEqual(body["dataset"]["filter"]["and"][0]["dimensions"]["values"],
                          ["rg-tc-gecko-t-win11-64-25h2"])
-        self.assertIn(SUBSCRIPTION, args[args.index("--url") + 1])
+        self.assertIn(SUBSCRIPTION, args[0])
+        self.assertEqual(args[2], "test-token")
 
 
 if __name__ == "__main__":

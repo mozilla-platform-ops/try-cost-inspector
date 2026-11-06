@@ -24,7 +24,7 @@ CAVEATS = [
     "Storage is not yet included. Temporary storage bundled into Azure VM rates remains in those rates.",
     "Spot instances are assumed; this does not verify the original VM's purchasing model.",
     "Only task execution runtime is charged. Queue wait, boot/idle outside the task, networking and shared overhead are excluded.",
-    "Azure rates are daily, usage-weighted subscription billing averages with reporting lag; they can blend OS/licensing classes and price changes. They are not exact per-VM charges or rolling 24-hour Spot prices.",
+    "Azure prefers subscription billing rates cached for 24 hours, then uses current public Windows DevTest Spot retail fallback prices when available. Billing rates are daily usage-weighted averages with reporting lag and may blend OS/licensing classes. Public fallback is explicitly labeled; neither source is an exact per-VM historical charge or rolling 24-hour average.",
     "GCP uses public CPU/RAM Spot list prices, not negotiated project/account rates, credits or discounts. More accurate billing access is deferred.",
     "Hardware, shared signing/artifact workers, unsupported machines/regions and missing metadata/rates remain Not determined.",
     "Task classification covers known metadata only; Other/unknown categories may need refinement. A Failed test identifies a task, not an individual test case.",
@@ -33,7 +33,7 @@ PREDICTION_CAVEATS = [
     "Prediction uses the optimized scheduled graph plus decision, excluding reused dependencies. Later action tasks, retriggers and retries are not forecast.",
     "Runtime is a completed-run median by task name and pool, falling back to task kind and pool with low confidence. Sparse, cached or unrepresentative runs can severely underestimate long builds/tests.",
     "Placement uses the historical VM/region mix; the actual scheduler may select different hardware. Missing history or any missing scenario price leaves that task cost unknown.",
-    "GCP prediction integrates Spot CPU/RAM prices over the preceding 24 hours. Azure prediction explicitly uses the latest available daily billing-rate approximation, at most seven days old.",
+    "GCP prediction integrates Spot CPU/RAM prices over the preceding 24 hours. Azure uses a daily billing-rate approximation at most seven days old, or explicitly labeled current public Spot fallback. A 24-hour cache lifetime is not a 24-hour average price.",
     "Seed history contains only two example pushes. This is not a trained or calibrated budget model. Future and target-push observations are excluded.",
 ]
 CLOUD_ERRORS = (OSError, ValueError, KeyError, URLError, subprocess.SubprocessError)
@@ -60,35 +60,20 @@ def catalog_for(start, end, warnings):
     return {"requested_start": start.isoformat(), "requested_end": end.isoformat(), "skus": []}
 
 
-def azure_rates_for(rows, subscription, warnings):
-    if not rows or not subscription:
-        if rows:
-            warnings.append("Azure subscription is not configured; Azure prices remain Not determined.")
-        return {}
-    try:
-        return azure.billing_rates(azure.fetch_billing(rows, subscription))
-    except CLOUD_ERRORS as exc:
-        warnings.append(f"Azure billing query unavailable ({type(exc).__name__}); Azure prices remain Not determined.")
-        return {}
-
-
 def prediction_azure_rates(history, as_of, subscription, warnings):
     start = as_of - timedelta(hours=24)
-    samples = [r for r in history if r.get("cloud_provider") == "azure"]
-    # Query around forecast time, not the historical task execution dates.
-    current = [dict(r, started=as_of.isoformat()) for r in samples]
-    rates = azure_rates_for(current, subscription, warnings)
-    result = []
-    for size, region in sorted({(r["vm_size"], r["region"]) for r in samples if r.get("vm_size") and r.get("region")}):
-        meter = size.removeprefix("Standard_").replace("_", " ") + " Spot"
-        matches = [(day, rate) for (name, location, day), rate in rates.items()
-                   if name == meter and location == region and 0 <= (as_of.date() - day).days <= 7]
-        if matches:
-            day, rate = max(matches)
-            result.append({"vm_size": size, "region": region, "window_start": start.isoformat(),
-                           "window_end": as_of.isoformat(), "usd_per_hour": str(rate),
-                           "price_note": f"Approximation: daily blended subscription Spot rate ({day}); exact rolling 24-hour average unavailable"})
-    return result
+    # One-hour probes obtain a rate; these are not observed task executions.
+    probes = [dict(r, started=as_of.isoformat(), resolved=(as_of + timedelta(hours=1)).isoformat(),
+                   duration_seconds="3600") for r in history if r.get("cloud_provider") == "azure"]
+    priced = azure.estimate_rows(probes, subscription, warnings)
+    result = {}
+    for row in priced:
+        if row.get("azure_spot_usd_per_hour"):
+            key = (row["vm_size"], row["region"])
+            result[key] = {"vm_size": key[0], "region": key[1], "window_start": start.isoformat(),
+                           "window_end": as_of.isoformat(), "usd_per_hour": row["azure_spot_usd_per_hour"],
+                           "price_note": row["azure_price_note"] + "; Azure price is an approximation, not an exact rolling 24-hour average"}
+    return list(result.values())
 
 
 def cell(value):
@@ -220,8 +205,7 @@ def main():
         if args.mode == "analysis":
             rows = inspection.inspect(revision)
             write_csv(output / "tasks.csv", rows, inspection.FIELDS)
-            azure_rows = [r for r in rows if r["cloud_provider"] == "azure"]
-            rows = azure.price_rows(rows, azure_rates_for(azure_rows, subscription, warnings))
+            rows = azure.estimate_rows(rows, subscription, warnings)
             snapshot = {"source": public_spot.URL, "retrieved_at": datetime.now(timezone.utc).isoformat(), "rates": []}
             if any(r["cloud_provider"] == "gcp" for r in rows):
                 try:

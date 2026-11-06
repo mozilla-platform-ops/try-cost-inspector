@@ -95,3 +95,23 @@
   provider bucket 7 runs / 5.3307 minutes, and all unpriced non-hardware costs
   14 runs / 23.7732 minutes (including 7 Azure runs whose billing query failed).
   Azure prices remain unknown; this run did not capture the precise HTTP status.
+
+## Azure 24-hour cache and public fallback
+
+- User approved cached subscription rates first, clearly labeled public Spot
+  fallback, and a 24-hour cache lifetime. Both workflows share a GitHub Actions
+  cache and report-job concurrency group. Price files are Git-ignored.
+- Subscription cache keys include subscription, requested dates and worker
+  resource-group scope. Retail keys include SKU, region, OS and price class.
+  TTL is strict <24 hours from successful retrieval; hits do not renew it.
+- Fresh subscription cache has priority. If fresh public fallback covers all
+  tasks and no subscription cache exists, reuse it without more Cost Management
+  calls until expiry. Do not store failed queries as rate data.
+- Billing uses the service principal's ARM token, with bounded retries for
+  429/503 honoring the longest retry header. HTTP failures are now identified
+  in report warnings; tokens are never logged/cached. Redirects are rejected.
+- Current retail fallback matches Windows DevTestConsumption Spot, region/SKU,
+  USD hourly units and primary meter. Never substitute Linux, ordinary Windows,
+  reservations or ambiguous prices. Source/retrieval/cache status is in CSVs;
+  fallback does not claim historical/24-hour-average/subscription-specific prices.
+- 54 tests and actionlint pass; cache and fallback workflow verification pending.

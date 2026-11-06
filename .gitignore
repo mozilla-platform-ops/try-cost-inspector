@@ -3,3 +3,5 @@ reports/
 .env
 *.env
 gha-creds-*.json
+
+.azure-price-cache/
