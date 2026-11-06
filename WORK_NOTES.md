@@ -88,3 +88,10 @@
   uncategorized-totals.csv; 46 tests pass, covering label and runtime separation.
 - User requested another analysis query after five minutes; target dispatch
   2026-11-06T00:11:21Z for revision 38085f64c3c4. No pricing queries during wait.
+
+- Five-minute pause honored; dispatched rerun at 2026-11-06T00:11:29Z.
+  https://github.com/mozilla-platform-ops/try-cost-inspector/actions/runs/42135004892
+  passed. Artifact confirms total task runtime 840.57 minutes, Uncategorized
+  provider bucket 7 runs / 5.3307 minutes, and all unpriced non-hardware costs
+  14 runs / 23.7732 minutes (including 7 Azure runs whose billing query failed).
+  Azure prices remain unknown; this run did not capture the precise HTTP status.
